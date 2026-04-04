@@ -4,11 +4,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"gworx/pack"
 	"hash/crc32"
 	"io"
 	"slices"
 	"strings"
+
+	"github.com/unknown-gd/pack-go"
 
 	"github.com/IGLOU-EU/go-wildcard/v2"
 )
