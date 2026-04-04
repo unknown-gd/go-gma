@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/unknown-gd/pack-go"
+	"github.com/unknown-gd/go-pack"
 
 	"github.com/IGLOU-EU/go-wildcard/v2"
 )
