@@ -416,12 +416,12 @@ type File struct {
 	Path string
 	Size int64
 
-	Checksum    uint32
-	data_offset int64
+	Checksum     uint32
+	DataPosition int64
 }
 
-func (file *File) Read(reader io.ReadSeekCloser, data_position int64) ([]byte, error) {
-	_, err := reader.Seek(data_position+file.data_offset, io.SeekStart)
+func (file *File) Read(reader io.ReadSeekCloser) ([]byte, error) {
+	_, err := reader.Seek(file.DataPosition, io.SeekStart)
 	if err != nil {
 		return nil, err
 	}
@@ -465,8 +465,8 @@ func (file *File) WriteData(writer io.WriteSeeker, data []byte) error {
 	return err
 }
 
-func (file *File) CalculateChecksum(reader io.ReadSeekCloser, data_position int64) (uint32, error) {
-	_, err := reader.Seek(data_position+file.data_offset, io.SeekStart)
+func (file *File) CalculateChecksum(reader io.ReadSeekCloser) (uint32, error) {
+	_, err := reader.Seek(file.DataPosition, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
@@ -503,8 +503,7 @@ type Addon struct {
 	Header   Header
 	Metadata Metadata
 
-	Files        []File
-	DataPosition int64
+	Files []File
 
 	Size     int64
 	Checksum uint32
@@ -522,8 +521,6 @@ func (addon *Addon) Reset() {
 	addon.Metadata = metadata
 
 	addon.Files = []File{}
-
-	addon.DataPosition = 0
 
 	addon.Size = 0
 	addon.Checksum = 0
@@ -592,20 +589,22 @@ func ParseFiles(addon *Addon, reader io.ReadSeekCloser) error {
 		}
 
 		file_list = append(file_list, File{
-			Path:        path,
-			Size:        size,
-			Checksum:    checksum,
-			data_offset: file_offset,
+			Path:         path,
+			Size:         size,
+			Checksum:     checksum,
+			DataPosition: file_offset,
 		})
 
 		file_offset += size
 	}
 
 	data_position, err := reader.Seek(0, io.SeekCurrent)
-	if err == nil {
-		addon.DataPosition = data_position
-	} else {
+	if err != nil {
 		return err
+	}
+
+	for _, file := range file_list {
+		file.DataPosition += data_position
 	}
 
 	addon.Files = file_list
