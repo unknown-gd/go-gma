@@ -503,8 +503,8 @@ type Addon struct {
 	Header   Header
 	Metadata Metadata
 
-	Files         []File
-	data_position int64
+	Files        []File
+	DataPosition int64
 
 	Size     int64
 	Checksum uint32
@@ -523,7 +523,7 @@ func (addon *Addon) Reset() {
 
 	addon.Files = []File{}
 
-	addon.data_position = 0
+	addon.DataPosition = 0
 
 	addon.Size = 0
 	addon.Checksum = 0
@@ -603,7 +603,7 @@ func ParseFiles(addon *Addon, reader io.ReadSeekCloser) error {
 
 	data_position, err := reader.Seek(0, io.SeekCurrent)
 	if err == nil {
-		addon.data_position = data_position
+		addon.DataPosition = data_position
 	} else {
 		return err
 	}
