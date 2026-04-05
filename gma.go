@@ -603,8 +603,8 @@ func ParseFiles(addon *Addon, reader io.ReadSeekCloser) error {
 		return err
 	}
 
-	for _, file := range file_list {
-		file.DataPosition += data_position
+	for i := 0; i < len(file_list); i++ {
+		file_list[i].DataPosition += data_position
 	}
 
 	addon.Files = file_list
