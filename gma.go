@@ -24,12 +24,35 @@ const COMPRESSION_SIGNATURE = 0xBEEFCACE
 const CRC32_STEP = 4096
 const HEADER_SIZE = 5
 
-var ErrInvalidSignature = errors.New("invalid signature")
-var ErrUnsupportedVersion = errors.New("unsupported version")
-var ErrChecksumMismatch = errors.New("checksum mismatch")
-var ErrIsDirectory = errors.New("file is a directory")
-
 var crc32_buffer []byte = make([]byte, CRC32_STEP)
+
+func CalculateChecksum(reader io.ReadSeekCloser, file_size int64) (uint32, error) {
+	checksum := crc32.NewIEEE()
+
+	end_position := int((file_size/CRC32_STEP)-1) * CRC32_STEP
+
+	for i := 0; i <= end_position; i += CRC32_STEP {
+		_, err := reader.Read(crc32_buffer)
+		if err != nil {
+			return 0, err
+		}
+
+		checksum.Write(crc32_buffer)
+	}
+
+	remainder := file_size % CRC32_STEP
+
+	if remainder != 0 {
+		_, err := reader.Read(crc32_buffer[:remainder])
+		if err != nil {
+			return 0, err
+		}
+
+		checksum.Write(crc32_buffer[:remainder])
+	}
+
+	return checksum.Sum32(), nil
+}
 
 var CategoryList = []string{
 	"gamemode",
@@ -242,8 +265,8 @@ func (self *Description) Read() error {
 	category := strings.ToLower(self.Category)
 	tags := self.Tags
 
-	for i := range tags {
-		tags[i] = strings.ToLower(tags[i])
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(tag)
 	}
 
 	self.Category = category
@@ -251,8 +274,55 @@ func (self *Description) Read() error {
 	return nil
 }
 
+var ErrAddonLeastTag = errors.New("Addon must have at least one tag")
+var ErrAddonMostTag = errors.New("Addon must have at most 3 tags")
+var ErrAddonUniqueTag = errors.New("Addon must have unique tags")
+
 func (self *Description) ToJSON() ([]byte, error) {
-	return json.Marshal(self)
+	data, err := json.Marshal(self)
+	if err != nil {
+		return nil, err
+	}
+
+	category := self.Category
+
+	if !CategoryExists(category) {
+		return nil, errors.New("Addon type '" + category + "' does not allowed")
+	}
+
+	tags := self.Tags
+	tag_count := len(tags)
+
+	if tag_count == 0 {
+		return nil, ErrAddonLeastTag
+	} else if tag_count > 3 {
+		return nil, ErrAddonMostTag
+	}
+
+	for i := range tag_count {
+		tag := tags[i]
+		if !TagExists(tag) {
+			return nil, errors.New("Addon tag '" + tag + "' does not allowed")
+		}
+
+		for j := range i {
+			if tag == tags[j] {
+				return nil, ErrAddonUniqueTag
+			}
+		}
+	}
+
+	return data, nil
+}
+
+func (self *Description) Update() error {
+	data, err := self.ToJSON()
+	if err != nil {
+		return err
+	}
+
+	self.content = data
+	return nil
 }
 
 func (self *Description) Write() error {
@@ -285,6 +355,7 @@ func (self *Metadata) Reset() {
 
 	description := Description{}
 	description.Reset()
+
 	self.Description = description
 
 	self.RequiredContent = []string{}
@@ -339,8 +410,7 @@ func (self *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
 		description := Description{
 			Title:    "unknown",
 			Category: "unknown",
-
-			content: content,
+			content:  content,
 		}
 
 		self.Description = description
@@ -396,7 +466,10 @@ func (self *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
 		return err
 	}
 
-	err = pack.WriteNullTerminatedBytes(writer, self.Description.content, nil) // Description
+	description := self.Description
+	description.Update()
+
+	err = pack.WriteNullTerminatedBytes(writer, description.content, nil) // Description
 	if err != nil {
 		return err
 	}
@@ -483,6 +556,8 @@ func (self *File) ReadData() ([]byte, error) {
 		return nil, err
 	}
 
+	defer file.Close()
+
 	_, err = file.Seek(self.DataPosition, io.SeekStart)
 	if err != nil {
 		return nil, err
@@ -495,7 +570,6 @@ func (self *File) ReadData() ([]byte, error) {
 		return nil, err
 	}
 
-	defer file.Close()
 	return data, nil
 }
 
@@ -504,6 +578,8 @@ func (self *File) WriteData(writer io.WriteSeeker) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	defer file.Close()
 
 	_, err = file.Seek(self.DataPosition, io.SeekStart)
 	if err != nil {
@@ -531,37 +607,14 @@ func (self *File) CalculateChecksum() (uint32, error) {
 		return 0, err
 	}
 
+	defer file.Close()
+
 	_, err = file.Seek(self.DataPosition, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
 
-	checksum := crc32.NewIEEE()
-	file_size := self.Size
-
-	end_position := int((file_size/CRC32_STEP)-1) * CRC32_STEP
-
-	for i := 0; i <= end_position; i += CRC32_STEP {
-		_, err := file.Read(crc32_buffer)
-		if err != nil {
-			return 0, err
-		}
-
-		checksum.Write(crc32_buffer)
-	}
-
-	remainder := file_size % CRC32_STEP
-
-	if remainder != 0 {
-		_, err := file.Read(crc32_buffer[:remainder])
-		if err != nil {
-			return 0, err
-		}
-
-		checksum.Write(crc32_buffer[:remainder])
-	}
-
-	return checksum.Sum32(), nil
+	return CalculateChecksum(file, self.Size)
 }
 
 func (self *File) UpdateChecksum() error {
@@ -572,6 +625,20 @@ func (self *File) UpdateChecksum() error {
 	} else {
 		return err
 	}
+}
+
+func (self *File) IsValid() (bool, error) {
+	expected_checksum := self.Checksum
+	if expected_checksum == 0 {
+		return true, nil // No checksum
+	}
+
+	checksum, err := self.CalculateChecksum()
+	if err != nil {
+		return false, err
+	}
+
+	return checksum == expected_checksum, nil
 }
 
 type Addon struct {
@@ -603,7 +670,13 @@ func (self *Addon) Reset() {
 	self.Checksum = 0
 }
 
+var ErrIsDirectory = errors.New("file is a directory")
+
 func (self *Addon) AddFile(file_path string, internal_path string) error {
+	if !IsAllowedPath(internal_path) {
+		return errors.New("path '" + internal_path + "' is not allowed")
+	}
+
 	info, err := os.Stat(file_path)
 	if err != nil {
 		return err
@@ -644,9 +717,14 @@ func (self *Addon) UpdateSize() int64 {
 	size += 8 // SteamID
 	size += 8 // Timestamp
 
-	size += int64(len(metadata.Title) + 1)               // Title
-	size += int64(len(metadata.Description.content) + 1) // Description
-	size += int64(len(metadata.Author) + 1)              // Author
+	size += int64(len(metadata.Title) + 1) // Title
+
+	description := metadata.Description
+	description.Update()
+
+	size += int64(len(description.content) + 1) // Description
+
+	size += int64(len(metadata.Author) + 1) // Author
 
 	size += 4 // Version
 
@@ -791,47 +869,124 @@ func (self *Addon) Read(reader io.ReadSeekCloser) error {
 // }
 
 func (self *Addon) Write(file_path string) error {
-	writer, err := os.Create(file_path)
+	file, err := os.Create(file_path)
 	if err != nil {
 		return err
 	}
 
-	err = self.Header.Write(writer)
+	defer file.Close()
+
+	// Header
+	err = self.Header.Write(file)
 	if err != nil {
 		return err
 	}
 
-	err = self.Metadata.Write(self, writer)
+	// Metadata
+	err = self.Metadata.Write(self, file)
 	if err != nil {
 		return err
 	}
 
-	for _, file := range self.Files {
-		err = file.WriteInfo(writer)
+	// File list
+	for _, f := range self.Files {
+		err = f.WriteInfo(file)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = pack.WriteUInt32(writer, 0, false)
+	err = pack.WriteUInt32(file, 0, false)
 	if err != nil {
 		return err
 	}
 
-	for _, file := range self.Files {
-		_, err = file.WriteData(writer)
+	// File data
+	for _, f := range self.Files {
+		_, err = f.WriteData(file)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = pack.WriteUInt32(writer, 0, false)
+	file_size, err := file.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
 
-	defer writer.Close()
+	self.Size = file_size
+
+	err = file.Close()
+	if err != nil {
+		return err
+	}
+
+	file, err = os.Open(file_path)
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	checksum, err := CalculateChecksum(file, file_size)
+	if err != nil {
+		return err
+	}
+
+	self.Checksum = checksum
+
+	err = pack.WriteUInt32(file, checksum, false)
+	if err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func (self *Addon) CalculateChecksum() (uint32, error) {
+	file, err := os.Open(self.Location)
+	if err != nil {
+		return 0, err
+	}
+
+	defer file.Close()
+
+	file_size, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		return 0, err
+	}
+
+	file_size -= 4 // checksum bytes (uint32/crc32)
+	return CalculateChecksum(file, file_size)
+}
+
+func (self *Addon) UpdateChecksum() error {
+	checksum, err := self.CalculateChecksum()
+	if err == nil {
+		self.Checksum = checksum
+		return nil
+	} else {
+		return err
+	}
+}
+
+func (self *Addon) IsValid() (bool, error) {
+	expected_checksum := self.Checksum
+	if expected_checksum == 0 {
+		return true, nil // No checksum
+	}
+
+	checksum, err := self.CalculateChecksum()
+	if err != nil {
+		return false, err
+	}
+
+	return checksum == expected_checksum, nil
 }
 
 func Open(file_path string) (*Addon, error) {
@@ -840,52 +995,16 @@ func Open(file_path string) (*Addon, error) {
 		return nil, err
 	}
 
-	addon := Addon{}
-	addon.Reset()
-
-	addon.Location = file_path
-
-	addon.Read(file)
-
 	defer file.Close()
+
+	addon := Addon{
+		Location: file_path,
+	}
+
+	err = addon.Read(file)
+	if err != nil {
+		return nil, err
+	}
+
 	return &addon, nil
-}
-
-func CalculateChecksum(reader io.ReadSeekCloser) (uint32, error) {
-	file_size, err := reader.Seek(0, io.SeekEnd)
-	if err != nil {
-		return 0, err
-	}
-
-	_, err = reader.Seek(0, io.SeekStart)
-	if err != nil {
-		return 0, err
-	}
-
-	checksum := crc32.NewIEEE()
-	file_size -= 4 // checksum bytes (crc32)
-
-	end_position := int((file_size/CRC32_STEP)-1) * CRC32_STEP
-
-	for i := 0; i <= end_position; i += CRC32_STEP {
-		_, err := reader.Read(crc32_buffer)
-		if err != nil {
-			return 0, err
-		}
-
-		checksum.Write(crc32_buffer)
-	}
-
-	remainder := file_size % CRC32_STEP
-
-	if remainder != 0 {
-		_, err := reader.Read(crc32_buffer[:remainder])
-		if err != nil {
-			return 0, err
-		}
-
-		checksum.Write(crc32_buffer[:remainder])
-	}
-
-	return checksum.Sum32(), nil
 }
