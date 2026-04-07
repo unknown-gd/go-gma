@@ -833,41 +833,6 @@ func (self *Addon) Read(reader io.ReadSeekCloser) error {
 	return nil
 }
 
-// func build_files(base_path string, directory_path string, files []File) ([]File, error) {
-// 	entries, err := os.ReadDir(directory_path)
-// 	if err != nil {
-// 		return files, err
-// 	}
-
-// 	for _, entry := range entries {
-// 		if entry.IsDir() {
-// 			files, err = build_files(base_path, directory_path+"/"+entry.Name(), files)
-// 			if err != nil {
-// 				return files, err
-// 			}
-// 		} else {
-// 			info, err := entry.Info()
-// 			if err != nil {
-// 				return files, err
-// 			}
-
-// 			abs_path := directory_path + "/" + entry.Name()
-// 			rel_path, _ := strings.CutPrefix(abs_path, base_path)
-
-// 			files = append(files, File{
-// 				Index:        uint32(len(files)),
-// 				Path:         rel_path,
-// 				Size:         info.Size(),
-// 				Checksum:     0,
-// 				DataPosition: 0,
-// 				DataLocation: abs_path,
-// 			})
-// 		}
-// 	}
-
-// 	return files, nil
-// }
-
 func (self *Addon) Write(file_path string) error {
 	file, err := os.Create(file_path)
 	if err != nil {
@@ -909,6 +874,7 @@ func (self *Addon) Write(file_path string) error {
 		}
 	}
 
+	// Addon size
 	file_size, err := file.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
@@ -916,17 +882,11 @@ func (self *Addon) Write(file_path string) error {
 
 	self.Size = file_size
 
-	err = file.Close()
+	// Addon checksum
+	_, err = file.Seek(0, io.SeekStart)
 	if err != nil {
 		return err
 	}
-
-	file, err = os.Open(file_path)
-	if err != nil {
-		return err
-	}
-
-	defer file.Close()
 
 	checksum, err := CalculateChecksum(file, file_size)
 	if err != nil {
@@ -934,6 +894,12 @@ func (self *Addon) Write(file_path string) error {
 	}
 
 	self.Checksum = checksum
+
+	// Write checksum
+	_, err = file.Seek(file_size, io.SeekStart)
+	if err != nil {
+		return err
+	}
 
 	err = pack.WriteUInt32(file, checksum, false)
 	if err != nil {
