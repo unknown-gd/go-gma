@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ const HEADER_SIZE = 5
 var ErrInvalidSignature = errors.New("invalid signature")
 var ErrUnsupportedVersion = errors.New("unsupported version")
 var ErrChecksumMismatch = errors.New("checksum mismatch")
+var ErrIsDirectory = errors.New("file is a directory")
 
 var crc32_buffer []byte = make([]byte, CRC32_STEP)
 
@@ -176,16 +178,16 @@ type Header struct {
 
 var header_buffer []byte = make([]byte, HEADER_SIZE)
 
-func (header *Header) Reset() {
-	header.Identifier = IDENTIFIER
-	header.Version = VERSION
+func (self *Header) Reset() {
+	self.Identifier = IDENTIFIER
+	self.Version = VERSION
 }
 
-func (header *Header) Read(reader io.ReadSeekCloser) error {
+func (self *Header) Read(reader io.ReadSeekCloser) error {
 	_, err := reader.Read(header_buffer)
 	if err == nil {
-		header.Identifier = binary.LittleEndian.Uint32(header_buffer[:4])
-		header.Version = header_buffer[HEADER_SIZE-1]
+		self.Identifier = binary.LittleEndian.Uint32(header_buffer[:4])
+		self.Version = header_buffer[HEADER_SIZE-1]
 	} else {
 		return err
 	}
@@ -193,9 +195,9 @@ func (header *Header) Read(reader io.ReadSeekCloser) error {
 	return nil
 }
 
-func (header *Header) Write(writer io.WriteSeeker) error {
-	binary.LittleEndian.PutUint32(header_buffer[:4], header.Identifier)
-	header_buffer[HEADER_SIZE-1] = header.Version
+func (self *Header) Write(writer io.WriteSeeker) error {
+	binary.LittleEndian.PutUint32(header_buffer[:4], self.Identifier)
+	header_buffer[HEADER_SIZE-1] = self.Version
 	_, err := writer.Write(header_buffer)
 	return err
 }
@@ -208,11 +210,11 @@ type Description struct {
 	content  []byte
 }
 
-func (description *Description) Reset() {
-	description.Title = "unknown"
-	description.Category = ""
-	description.Tags = []string{}
-	description.Ignore = []string{
+func (self *Description) Reset() {
+	self.Title = "unknown"
+	self.Category = ""
+	self.Tags = []string{}
+	self.Ignore = []string{
 		// gmad specifiic files
 		"addon.json",
 
@@ -228,38 +230,38 @@ func (description *Description) Reset() {
 		".DS_Store",
 	}
 
-	description.content = []byte{}
+	self.content = []byte{}
 }
 
-func (description *Description) Read() error {
-	err := json.Unmarshal(description.content, &description)
+func (self *Description) Read() error {
+	err := json.Unmarshal(self.content, &self)
 	if err != nil {
 		return err
 	}
 
-	category := strings.ToLower(description.Category)
-	tags := description.Tags
+	category := strings.ToLower(self.Category)
+	tags := self.Tags
 
 	for i := range tags {
 		tags[i] = strings.ToLower(tags[i])
 	}
 
-	description.Category = category
-	description.Tags = tags
+	self.Category = category
+	self.Tags = tags
 	return nil
 }
 
-func (description *Description) ToJSON() ([]byte, error) {
-	return json.Marshal(description)
+func (self *Description) ToJSON() ([]byte, error) {
+	return json.Marshal(self)
 }
 
-func (description *Description) Write() error {
-	data, err := description.ToJSON()
+func (self *Description) Write() error {
+	data, err := self.ToJSON()
 	if err != nil {
 		return err
 	}
 
-	description.content = data
+	self.content = data
 	return nil
 }
 
@@ -275,39 +277,39 @@ type Metadata struct {
 	Version int32
 }
 
-func (metadata *Metadata) Reset() {
-	metadata.SteamID = 0
-	metadata.Timestamp = time.Now().Unix()
+func (self *Metadata) Reset() {
+	self.SteamID = 0
+	self.Timestamp = time.Now().Unix()
 
-	metadata.Title = "unknown"
+	self.Title = "unknown"
 
 	description := Description{}
 	description.Reset()
-	metadata.Description = description
+	self.Description = description
 
-	metadata.RequiredContent = []string{}
+	self.RequiredContent = []string{}
 
-	metadata.Author = "unknown"
-	metadata.Version = 1
+	self.Author = "unknown"
+	self.Version = 1
 }
 
-func (metadata *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
+func (self *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
 	steam_id, err := pack.ReadUInt64(reader, false)
 	if err == nil {
-		metadata.SteamID = steam_id
+		self.SteamID = steam_id
 	} else {
 		return err
 	}
 
 	timestamp, err := pack.ReadUInt64(reader, false)
 	if err == nil {
-		metadata.Timestamp = int64(timestamp)
+		self.Timestamp = int64(timestamp)
 	} else {
 		return err
 	}
 
 	if addon.Header.Version > 1 {
-		var required_list []string = []string{}
+		required_list := []string{}
 
 		for {
 			str, str_length, err := pack.ReadNullTerminatedString(reader)
@@ -322,12 +324,12 @@ func (metadata *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
 			}
 		}
 
-		metadata.RequiredContent = required_list
+		self.RequiredContent = required_list
 	}
 
 	title, _, err := pack.ReadNullTerminatedString(reader)
 	if err == nil {
-		metadata.Title = title
+		self.Title = title
 	} else {
 		return err
 	}
@@ -341,7 +343,7 @@ func (metadata *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
 			content: content,
 		}
 
-		metadata.Description = description
+		self.Description = description
 		description.Read()
 	} else {
 		return err
@@ -349,14 +351,14 @@ func (metadata *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
 
 	author, _, err := pack.ReadNullTerminatedString(reader)
 	if err == nil {
-		metadata.Author = author
+		self.Author = author
 	} else {
 		return err
 	}
 
 	version, err := pack.ReadInt32(reader, false)
 	if err == nil {
-		metadata.Version = version
+		self.Version = version
 	} else {
 		return err
 	}
@@ -364,18 +366,18 @@ func (metadata *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
 	return nil
 }
 
-func (metadata *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
-	err := pack.WriteUInt64(writer, metadata.SteamID, false) // SteamID
+func (self *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
+	err := pack.WriteUInt64(writer, self.SteamID, false) // SteamID
 	if err != nil {
 		return err
 	}
 
-	err = pack.WriteUInt64(writer, uint64(metadata.Timestamp), false) // Timestamp
+	err = pack.WriteUInt64(writer, uint64(self.Timestamp), false) // Timestamp
 	if err != nil {
 		return err
 	}
 
-	required_content := metadata.RequiredContent
+	required_content := self.RequiredContent
 
 	for i := range required_content {
 		err = pack.WriteNullTerminatedString(writer, required_content[i]) // Required content
@@ -389,22 +391,22 @@ func (metadata *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
 		return err
 	}
 
-	err = pack.WriteNullTerminatedString(writer, metadata.Title) // Title
+	err = pack.WriteNullTerminatedString(writer, self.Title) // Title
 	if err != nil {
 		return err
 	}
 
-	err = pack.WriteNullTerminatedBytes(writer, metadata.Description.content, nil) // Description
+	err = pack.WriteNullTerminatedBytes(writer, self.Description.content, nil) // Description
 	if err != nil {
 		return err
 	}
 
-	err = pack.WriteNullTerminatedString(writer, metadata.Author) // Author
+	err = pack.WriteNullTerminatedString(writer, self.Author) // Author
 	if err != nil {
 		return err
 	}
 
-	err = pack.WriteInt32(writer, metadata.Version, false) // Version
+	err = pack.WriteInt32(writer, self.Version, false) // Version
 	if err != nil {
 		return err
 	}
@@ -413,22 +415,109 @@ func (metadata *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
 }
 
 type File struct {
-	Path string
-	Size int64
+	Index    uint32
+	Path     string
+	Size     int64
+	Checksum uint32
 
-	Checksum     uint32
 	DataPosition int64
+	DataLocation string
 }
 
-func (file *File) Read(reader io.ReadSeekCloser) ([]byte, error) {
-	_, err := reader.Seek(file.DataPosition, io.SeekStart)
+func (self *File) ReadInfo(reader io.ReadSeekCloser, file_location string, file_offset int64) (bool, error) {
+	index, err := pack.ReadUInt32(reader, false) // File index
+	if err != nil {
+		return false, err
+	} else if index == 0 {
+		return false, nil
+	}
+
+	path, _, err := pack.ReadNullTerminatedString(reader) // File path
+	if err != nil {
+		return false, err
+	}
+
+	size, err := pack.ReadInt64(reader, false) // File size
+	if err != nil {
+		return false, err
+	}
+
+	checksum, err := pack.ReadUInt32(reader, false) // File checksum
+	if err != nil {
+		return false, err
+	}
+
+	self.Index = index
+	self.Path = path
+	self.Size = size
+	self.Checksum = checksum
+
+	self.DataPosition = file_offset
+	self.DataLocation = file_location
+
+	return true, err
+}
+
+func (self *File) WriteInfo(writer io.WriteSeeker) error {
+	err := pack.WriteUInt32(writer, self.Index, false) // Index
+	if err != nil {
+		return err
+	}
+
+	err = pack.WriteNullTerminatedString(writer, self.Path) // Path
+	if err != nil {
+		return err
+	}
+
+	err = pack.WriteInt64(writer, self.Size, false) // Size
+	if err != nil {
+		return err
+	}
+
+	return pack.WriteUInt32(writer, self.Checksum, false) // Checksum (CRC32)
+}
+
+func (self *File) ReadData() ([]byte, error) {
+	file, err := os.Open(self.DataLocation)
 	if err != nil {
 		return nil, err
 	}
 
-	data := make([]byte, file.Size)
+	_, err = file.Seek(self.DataPosition, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
 
-	_, err = reader.Read(data)
+	data := make([]byte, self.Size)
+
+	_, err = file.Read(data)
+	if err != nil {
+		return nil, err
+	}
+
+	defer file.Close()
+	return data, nil
+}
+
+func (self *File) WriteData(writer io.WriteSeeker) ([]byte, error) {
+	file, err := os.Open(self.DataLocation)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = file.Seek(self.DataPosition, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
+	data := make([]byte, self.Size)
+
+	_, err = file.Read(data)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = writer.Write(data)
 	if err != nil {
 		return nil, err
 	}
@@ -436,48 +525,24 @@ func (file *File) Read(reader io.ReadSeekCloser) ([]byte, error) {
 	return data, nil
 }
 
-func (file *File) WriteInfo(writer io.WriteSeeker, index uint32) error {
-	err := pack.WriteUInt32(writer, index, false) // Index
+func (self *File) CalculateChecksum() (uint32, error) {
+	file, err := os.Open(self.DataLocation)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	err = pack.WriteNullTerminatedString(writer, file.Path) // Path
-	if err != nil {
-		return err
-	}
-
-	err = pack.WriteInt64(writer, file.Size, false) // Size
-	if err != nil {
-		return err
-	}
-
-	err = pack.WriteUInt32(writer, file.Checksum, false) // Checksum (CRC32)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (file *File) WriteData(writer io.WriteSeeker, data []byte) error {
-	_, err := writer.Write(data)
-	return err
-}
-
-func (file *File) CalculateChecksum(reader io.ReadSeekCloser) (uint32, error) {
-	_, err := reader.Seek(file.DataPosition, io.SeekStart)
+	_, err = file.Seek(self.DataPosition, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
 
 	checksum := crc32.NewIEEE()
-	file_size := file.Size
+	file_size := self.Size
 
 	end_position := int((file_size/CRC32_STEP)-1) * CRC32_STEP
 
 	for i := 0; i <= end_position; i += CRC32_STEP {
-		_, err := reader.Read(crc32_buffer)
+		_, err := file.Read(crc32_buffer)
 		if err != nil {
 			return 0, err
 		}
@@ -488,7 +553,7 @@ func (file *File) CalculateChecksum(reader io.ReadSeekCloser) (uint32, error) {
 	remainder := file_size % CRC32_STEP
 
 	if remainder != 0 {
-		_, err := reader.Read(crc32_buffer[:remainder])
+		_, err := file.Read(crc32_buffer[:remainder])
 		if err != nil {
 			return 0, err
 		}
@@ -499,6 +564,16 @@ func (file *File) CalculateChecksum(reader io.ReadSeekCloser) (uint32, error) {
 	return checksum.Sum32(), nil
 }
 
+func (self *File) UpdateChecksum() error {
+	checksum, err := self.CalculateChecksum()
+	if err == nil {
+		self.Checksum = checksum
+		return nil
+	} else {
+		return err
+	}
+}
+
 type Addon struct {
 	Header   Header
 	Metadata Metadata
@@ -507,29 +582,64 @@ type Addon struct {
 
 	Size     int64
 	Checksum uint32
+
+	Location string
 }
 
-func (addon *Addon) Reset() {
+func (self *Addon) Reset() {
 	header := Header{}
 	header.Reset()
 
-	addon.Header = header
+	self.Header = header
 
 	metadata := Metadata{}
 	metadata.Reset()
 
-	addon.Metadata = metadata
+	self.Metadata = metadata
 
-	addon.Files = []File{}
+	self.Files = []File{}
 
-	addon.Size = 0
-	addon.Checksum = 0
+	self.Size = 0
+	self.Checksum = 0
 }
 
-func (addon *Addon) UpdateSize() int64 {
+func (self *Addon) AddFile(file_path string, internal_path string) error {
+	info, err := os.Stat(file_path)
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		return ErrIsDirectory
+	}
+
+	file := File{
+		Index:    uint32(len(self.Files) + 1),
+		Path:     internal_path,
+		Size:     info.Size(),
+		Checksum: 0,
+
+		DataPosition: 0,
+		DataLocation: file_path,
+	}
+
+	file.UpdateChecksum()
+
+	self.Files = append(self.Files, file)
+
+	return nil
+}
+
+func (self *Addon) RemoveFile(index int) {
+	if index >= 0 && index < len(self.Files) {
+		self.Files = append(self.Files[:index], self.Files[index+1:]...)
+	}
+}
+
+func (self *Addon) UpdateSize() int64 {
 	var size int64 = HEADER_SIZE // Header
 
-	metadata := addon.Metadata
+	metadata := self.Metadata
 
 	size += 8 // SteamID
 	size += 8 // Timestamp
@@ -546,7 +656,7 @@ func (addon *Addon) UpdateSize() int64 {
 
 	size += 1 // Null terminator
 
-	for _, file := range addon.Files {
+	for _, file := range self.Files {
 		size += 4                         // Index
 		size += int64(len(file.Path) + 1) // Path
 		size += 8                         // Size
@@ -557,45 +667,63 @@ func (addon *Addon) UpdateSize() int64 {
 	size += 4 // Null terminator
 	size += 4 // Checksum
 
-	addon.Size = size
+	self.Size = size
 	return size
 }
 
-func ParseFiles(addon *Addon, reader io.ReadSeekCloser) error {
+func (self *Addon) GetFileByIndex(index int) *File {
+	files := self.Files
+	if index < 0 || index >= len(files) {
+		return nil
+	}
+
+	return &files[index]
+}
+
+func (self *Addon) GetFileByPath(path string) *File {
+	for _, file := range self.Files {
+		if file.Path == path {
+			return &file
+		}
+	}
+
+	return nil
+}
+
+func (self *Addon) GetFileCount() int {
+	return len(self.Files)
+}
+
+func (self *Addon) Read(reader io.ReadSeekCloser) error {
+	// Header
+	err := self.Header.Read(reader)
+	if err != nil {
+		return err
+	}
+
+	// Metadata
+	err = self.Metadata.Read(self, reader)
+	if err != nil {
+		return err
+	}
+
+	// File list
+	file_location := self.Location
 	var file_offset int64 = 0
 	file_list := []File{}
 
 	for {
-		index, err := pack.ReadUInt32(reader, false)
+		file := File{}
+
+		success, err := file.ReadInfo(reader, file_location, file_offset)
 		if err != nil {
 			return err
-		} else if index == 0 {
+		} else if success {
+			file_list = append(file_list, file)
+			file_offset += file.Size
+		} else {
 			break
 		}
-
-		path, _, err := pack.ReadNullTerminatedString(reader)
-		if err != nil {
-			return err
-		}
-
-		size, err := pack.ReadInt64(reader, false)
-		if err != nil {
-			return err
-		}
-
-		checksum, err := pack.ReadUInt32(reader, false)
-		if err != nil {
-			return err
-		}
-
-		file_list = append(file_list, File{
-			Path:         path,
-			Size:         size,
-			Checksum:     checksum,
-			DataPosition: file_offset,
-		})
-
-		file_offset += size
 	}
 
 	data_position, err := reader.Seek(0, io.SeekCurrent)
@@ -607,83 +735,79 @@ func ParseFiles(addon *Addon, reader io.ReadSeekCloser) error {
 		file_list[i].DataPosition += data_position
 	}
 
-	addon.Files = file_list
-	return nil
-}
+	self.Files = file_list
 
-func (addon *Addon) GetFileByIndex(index int) *File {
-	files := addon.Files
-	if index < 0 || index >= len(files) {
-		return nil
-	}
-
-	return &files[index]
-}
-
-func (addon *Addon) GetFileByPath(path string) *File {
-	for _, file := range addon.Files {
-		if file.Path == path {
-			return &file
-		}
-	}
-
-	return nil
-}
-
-func (addon *Addon) GetFileCount() int {
-	return len(addon.Files)
-}
-
-func (addon *Addon) Read(reader io.ReadSeekCloser) error {
-	// Header
-	err := addon.Header.Read(reader)
-	if err != nil {
-		return err
-	}
-
-	// Metadata
-	err = addon.Metadata.Read(addon, reader)
-	if err != nil {
-		return err
-	}
-
-	// Files
-	err = ParseFiles(addon, reader)
-	if err != nil {
-		return err
-	}
-
-	// Size
+	// Addon size
 	file_size, err := reader.Seek(-4, io.SeekEnd)
 	if err != nil {
 		return err
 	}
 
-	addon.Size = file_size
+	self.Size = file_size
 
-	// Checksum
+	// Addon checksum
 	file_checksum, err := pack.ReadUInt32(reader, false)
 	if err != nil {
 		return err
 	}
 
-	addon.Checksum = file_checksum
+	self.Checksum = file_checksum
 	return nil
 }
 
-func (addon *Addon) Write(writer io.WriteSeeker, files_content []string) error {
-	err := addon.Header.Write(writer)
+// func build_files(base_path string, directory_path string, files []File) ([]File, error) {
+// 	entries, err := os.ReadDir(directory_path)
+// 	if err != nil {
+// 		return files, err
+// 	}
+
+// 	for _, entry := range entries {
+// 		if entry.IsDir() {
+// 			files, err = build_files(base_path, directory_path+"/"+entry.Name(), files)
+// 			if err != nil {
+// 				return files, err
+// 			}
+// 		} else {
+// 			info, err := entry.Info()
+// 			if err != nil {
+// 				return files, err
+// 			}
+
+// 			abs_path := directory_path + "/" + entry.Name()
+// 			rel_path, _ := strings.CutPrefix(abs_path, base_path)
+
+// 			files = append(files, File{
+// 				Index:        uint32(len(files)),
+// 				Path:         rel_path,
+// 				Size:         info.Size(),
+// 				Checksum:     0,
+// 				DataPosition: 0,
+// 				DataLocation: abs_path,
+// 			})
+// 		}
+// 	}
+
+// 	return files, nil
+// }
+
+func (self *Addon) Write(file_path string) error {
+	writer, err := os.Create(file_path)
 	if err != nil {
 		return err
 	}
 
-	err = addon.Metadata.Write(addon, writer)
+	err = self.Header.Write(writer)
 	if err != nil {
 		return err
 	}
 
-	for index, file := range addon.Files {
-		err = file.WriteInfo(writer, uint32(index))
+	err = self.Metadata.Write(self, writer)
+	if err != nil {
+		return err
+	}
+
+	for _, file := range self.Files {
+		err = file.WriteInfo(writer)
 		if err != nil {
 			return err
 		}
@@ -694,8 +818,8 @@ func (addon *Addon) Write(writer io.WriteSeeker, files_content []string) error {
 		return err
 	}
 
-	for _, file := range files_content {
-		err = pack.WriteNullTerminatedString(writer, file)
+	for _, file := range self.Files {
+		_, err = file.WriteData(writer)
 		if err != nil {
 			return err
 		}
@@ -706,13 +830,24 @@ func (addon *Addon) Write(writer io.WriteSeeker, files_content []string) error {
 		return err
 	}
 
+	defer writer.Close()
 	return nil
 }
 
-func Open(reader io.ReadSeekCloser) (*Addon, error) {
+func Open(file_path string) (*Addon, error) {
+	file, err := os.Open(file_path)
+	if err != nil {
+		return nil, err
+	}
+
 	addon := Addon{}
 	addon.Reset()
-	addon.Read(reader)
+
+	addon.Location = file_path
+
+	addon.Read(file)
+
+	defer file.Close()
 	return &addon, nil
 }
 
