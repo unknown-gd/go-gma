@@ -4,55 +4,22 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"hash/crc32"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/ulikunitz/xz/lzma"
 	"github.com/unknown-gd/go-pack"
 
 	"github.com/IGLOU-EU/go-wildcard/v2"
 )
 
-const IDENTIFIER = 0x44414D47
-const VERSION = 3
-const APP_ID = 4000
-const COMPRESSION_SIGNATURE = 0xBEEFCACE
-
-const CRC32_STEP = 4096
-const HEADER_SIZE = 5
-
-var crc32_buffer []byte = make([]byte, CRC32_STEP)
-
-func CalculateChecksum(reader io.ReadSeekCloser, file_size int64) (uint32, error) {
-	checksum := crc32.NewIEEE()
-
-	end_position := int((file_size/CRC32_STEP)-1) * CRC32_STEP
-
-	for i := 0; i <= end_position; i += CRC32_STEP {
-		_, err := reader.Read(crc32_buffer)
-		if err != nil {
-			return 0, err
-		}
-
-		checksum.Write(crc32_buffer)
-	}
-
-	remainder := file_size % CRC32_STEP
-
-	if remainder != 0 {
-		_, err := reader.Read(crc32_buffer[:remainder])
-		if err != nil {
-			return 0, err
-		}
-
-		checksum.Write(crc32_buffer[:remainder])
-	}
-
-	return checksum.Sum32(), nil
-}
+const LZMA_SIGNATURE = 0x0000005D
+const GMA_SIGNATURE = 0x44414D47
+const GMA_VERSION = 3
 
 var CategoryList = []string{
 	"gamemode",
@@ -199,30 +166,51 @@ type Header struct {
 	Version    uint8
 }
 
-var header_buffer []byte = make([]byte, HEADER_SIZE)
-
 func (self *Header) Reset() {
-	self.Identifier = IDENTIFIER
-	self.Version = VERSION
+	self.Identifier = GMA_SIGNATURE
+	self.Version = GMA_VERSION
 }
 
-func (self *Header) Read(reader io.ReadSeekCloser) error {
-	_, err := reader.Read(header_buffer)
-	if err == nil {
-		self.Identifier = binary.LittleEndian.Uint32(header_buffer[:4])
-		self.Version = header_buffer[HEADER_SIZE-1]
-	} else {
+var ErrInvalidSignature = errors.New("invalid signature")
+var ErrUnsupportedVersion = errors.New("unsupported version")
+
+func (self *Header) Read(reader io.ReadSeeker) error {
+	var identifier uint32
+
+	err := binary.Read(reader, binary.LittleEndian, &identifier)
+	if err != nil {
 		return err
+	}
+
+	self.Identifier = identifier
+
+	if identifier != GMA_SIGNATURE {
+		return ErrInvalidSignature
+	}
+
+	var version uint8
+
+	err = binary.Read(reader, binary.LittleEndian, &version)
+	if err != nil {
+		return err
+	}
+
+	self.Version = version
+
+	if version > GMA_VERSION {
+		return ErrUnsupportedVersion
 	}
 
 	return nil
 }
 
 func (self *Header) Write(writer io.WriteSeeker) error {
-	binary.LittleEndian.PutUint32(header_buffer[:4], self.Identifier)
-	header_buffer[HEADER_SIZE-1] = self.Version
-	_, err := writer.Write(header_buffer)
-	return err
+	err := binary.Write(writer, binary.LittleEndian, &self.Identifier)
+	if err != nil {
+		return err
+	}
+
+	return binary.Write(writer, binary.LittleEndian, &self.Version)
 }
 
 type Description struct {
@@ -364,18 +352,14 @@ func (self *Metadata) Reset() {
 	self.Version = 1
 }
 
-func (self *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
-	steam_id, err := pack.ReadUInt64(reader, false)
-	if err == nil {
-		self.SteamID = steam_id
-	} else {
+func (self *Metadata) Read(addon *Addon, reader io.ReadSeeker) error {
+	err := binary.Read(reader, binary.LittleEndian, &self.SteamID)
+	if err != nil {
 		return err
 	}
 
-	timestamp, err := pack.ReadUInt64(reader, false)
-	if err == nil {
-		self.Timestamp = int64(timestamp)
-	} else {
+	err = binary.Read(reader, binary.LittleEndian, &self.Timestamp)
+	if err != nil {
 		return err
 	}
 
@@ -426,23 +410,16 @@ func (self *Metadata) Read(addon *Addon, reader io.ReadSeekCloser) error {
 		return err
 	}
 
-	version, err := pack.ReadInt32(reader, false)
-	if err == nil {
-		self.Version = version
-	} else {
-		return err
-	}
-
-	return nil
+	return binary.Read(reader, binary.LittleEndian, &self.Version)
 }
 
 func (self *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
-	err := pack.WriteUInt64(writer, self.SteamID, false) // SteamID
+	err := binary.Write(writer, binary.LittleEndian, &self.SteamID) // SteamID
 	if err != nil {
 		return err
 	}
 
-	err = pack.WriteUInt64(writer, uint64(self.Timestamp), false) // Timestamp
+	err = binary.Write(writer, binary.LittleEndian, &self.Timestamp) // Timestamp
 	if err != nil {
 		return err
 	}
@@ -466,7 +443,7 @@ func (self *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
 		return err
 	}
 
-	description := self.Description
+	description := &self.Description
 	description.Update()
 
 	err = pack.WriteNullTerminatedBytes(writer, description.content, nil) // Description
@@ -479,12 +456,7 @@ func (self *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
 		return err
 	}
 
-	err = pack.WriteInt32(writer, self.Version, false) // Version
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return binary.Write(writer, binary.LittleEndian, &self.Version) // Version
 }
 
 type File struct {
@@ -497,7 +469,7 @@ type File struct {
 	DataLocation string
 }
 
-func (self *File) ReadInfo(reader io.ReadSeekCloser, file_location string, file_offset int64) (bool, error) {
+func (self *File) ReadInfo(reader io.ReadSeeker, file_location string, file_offset int64) (bool, error) {
 	index, err := pack.ReadUInt32(reader, false) // File index
 	if err != nil {
 		return false, err
@@ -614,7 +586,7 @@ func (self *File) CalculateChecksum() (uint32, error) {
 		return 0, err
 	}
 
-	return CalculateChecksum(file, self.Size)
+	return pack.CRC32IEEE(file, self.Size)
 }
 
 func (self *File) UpdateChecksum() error {
@@ -651,6 +623,7 @@ type Addon struct {
 	Checksum uint32
 
 	Location string
+	Legacy   bool
 }
 
 func (self *Addon) Reset() {
@@ -668,6 +641,7 @@ func (self *Addon) Reset() {
 
 	self.Size = 0
 	self.Checksum = 0
+	self.Legacy = false
 }
 
 var ErrIsDirectory = errors.New("file is a directory")
@@ -710,9 +684,9 @@ func (self *Addon) RemoveFile(index int) {
 }
 
 func (self *Addon) UpdateSize() int64 {
-	var size int64 = HEADER_SIZE // Header
+	var size int64 = 5 // Header
 
-	metadata := self.Metadata
+	metadata := &self.Metadata
 
 	size += 8 // SteamID
 	size += 8 // Timestamp
@@ -772,7 +746,7 @@ func (self *Addon) GetFileCount() int {
 	return len(self.Files)
 }
 
-func (self *Addon) Read(reader io.ReadSeekCloser) error {
+func (self *Addon) Read(reader io.ReadSeeker) error {
 	// Header
 	err := self.Header.Read(reader)
 	if err != nil {
@@ -888,7 +862,7 @@ func (self *Addon) Write(file_path string) error {
 		return err
 	}
 
-	checksum, err := CalculateChecksum(file, file_size)
+	checksum, err := pack.CRC32IEEE(file, file_size)
 	if err != nil {
 		return err
 	}
@@ -928,7 +902,7 @@ func (self *Addon) CalculateChecksum() (uint32, error) {
 	}
 
 	file_size -= 4 // checksum bytes (uint32/crc32)
-	return CalculateChecksum(file, file_size)
+	return pack.CRC32IEEE(file, file_size)
 }
 
 func (self *Addon) UpdateChecksum() error {
@@ -955,6 +929,17 @@ func (self *Addon) IsValid() (bool, error) {
 	return checksum == expected_checksum, nil
 }
 
+func IsLegacy(reader io.ReadSeeker) (bool, error) {
+	var signature uint32
+
+	err := binary.Read(reader, binary.LittleEndian, &signature)
+	if err != nil {
+		return false, err
+	}
+
+	return signature == LZMA_SIGNATURE, nil
+}
+
 func Open(file_path string) (*Addon, error) {
 	file, err := os.Open(file_path)
 	if err != nil {
@@ -963,11 +948,60 @@ func Open(file_path string) (*Addon, error) {
 
 	defer file.Close()
 
-	addon := Addon{
-		Location: file_path,
+	is_legacy, err := IsLegacy(file)
+	if err != nil {
+		return nil, err
 	}
 
-	err = addon.Read(file)
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
+	addon := Addon{
+		Legacy: is_legacy,
+	}
+
+	var reader *os.File
+
+	// Legacy addon repack (lzma)
+	if is_legacy {
+		lzma_reader, err := lzma.NewReader(file)
+		if err != nil {
+			return nil, err
+		}
+
+		ext := filepath.Ext(file_path)
+		file_path = file_path[:len(file_path)-len(ext)] + "_gworx.gma"
+		addon.Location = file_path
+
+		writer, err := os.Create(file_path)
+		if err != nil {
+			return nil, err
+		}
+
+		data, err := io.ReadAll(lzma_reader)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = writer.Write(data)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = writer.Seek(0, io.SeekStart)
+		if err != nil {
+			return nil, err
+		}
+
+		reader = writer
+	} else {
+		addon.Location = file_path
+		reader = file
+	}
+
+	err = addon.Read(reader)
 	if err != nil {
 		return nil, err
 	}
