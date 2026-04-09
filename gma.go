@@ -1,7 +1,6 @@
 package gma
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -175,29 +174,21 @@ var ErrInvalidSignature = errors.New("invalid signature")
 var ErrUnsupportedVersion = errors.New("unsupported version")
 
 func (self *Header) Read(reader io.ReadSeeker) error {
-	var identifier uint32
-
-	err := binary.Read(reader, binary.LittleEndian, &identifier)
+	err := pack.ReadUInt32(reader, false, &self.Identifier)
 	if err != nil {
 		return err
 	}
 
-	self.Identifier = identifier
-
-	if identifier != GMA_SIGNATURE {
+	if self.Identifier != GMA_SIGNATURE {
 		return ErrInvalidSignature
 	}
 
-	var version uint8
-
-	err = binary.Read(reader, binary.LittleEndian, &version)
+	err = pack.ReadUInt8(reader, &self.Version)
 	if err != nil {
 		return err
 	}
 
-	self.Version = version
-
-	if version > GMA_VERSION {
+	if self.Version > GMA_VERSION {
 		return ErrUnsupportedVersion
 	}
 
@@ -205,12 +196,12 @@ func (self *Header) Read(reader io.ReadSeeker) error {
 }
 
 func (self *Header) Write(writer io.WriteSeeker) error {
-	err := binary.Write(writer, binary.LittleEndian, &self.Identifier)
+	err := pack.WriteUInt32(writer, false, self.Identifier)
 	if err != nil {
 		return err
 	}
 
-	return binary.Write(writer, binary.LittleEndian, &self.Version)
+	return pack.WriteUInt8(writer, self.Version)
 }
 
 type Description struct {
@@ -353,12 +344,12 @@ func (self *Metadata) Reset() {
 }
 
 func (self *Metadata) Read(addon *Addon, reader io.ReadSeeker) error {
-	err := binary.Read(reader, binary.LittleEndian, &self.SteamID)
+	err := pack.ReadUInt64(reader, false, &self.SteamID)
 	if err != nil {
 		return err
 	}
 
-	err = binary.Read(reader, binary.LittleEndian, &self.Timestamp)
+	err = pack.ReadInt64(reader, false, &self.Timestamp)
 	if err != nil {
 		return err
 	}
@@ -410,16 +401,16 @@ func (self *Metadata) Read(addon *Addon, reader io.ReadSeeker) error {
 		return err
 	}
 
-	return binary.Read(reader, binary.LittleEndian, &self.Version)
+	return pack.ReadInt32(reader, false, &self.Version)
 }
 
 func (self *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
-	err := binary.Write(writer, binary.LittleEndian, &self.SteamID) // SteamID
+	err := pack.WriteUInt64(writer, false, self.SteamID) // SteamID
 	if err != nil {
 		return err
 	}
 
-	err = binary.Write(writer, binary.LittleEndian, &self.Timestamp) // Timestamp
+	err = pack.WriteInt64(writer, false, self.Timestamp) // Timestamp
 	if err != nil {
 		return err
 	}
@@ -456,7 +447,7 @@ func (self *Metadata) Write(addon *Addon, writer io.WriteSeeker) error {
 		return err
 	}
 
-	return binary.Write(writer, binary.LittleEndian, &self.Version) // Version
+	return pack.WriteInt32(writer, false, self.Version) // Version
 }
 
 type File struct {
@@ -469,42 +460,40 @@ type File struct {
 	DataLocation string
 }
 
-func (self *File) ReadInfo(reader io.ReadSeeker, file_location string, file_offset int64) (bool, error) {
-	index, err := pack.ReadUInt32(reader, false) // File index
-	if err != nil {
-		return false, err
-	} else if index == 0 {
-		return false, nil
-	}
+var ErrNoMoreFileInfo = errors.New("no more file info")
 
-	path, _, err := pack.ReadNullTerminatedString(reader) // File path
-	if err != nil {
-		return false, err
-	}
-
-	size, err := pack.ReadInt64(reader, false) // File size
-	if err != nil {
-		return false, err
-	}
-
-	checksum, err := pack.ReadUInt32(reader, false) // File checksum
-	if err != nil {
-		return false, err
-	}
-
-	self.Index = index
-	self.Path = path
-	self.Size = size
-	self.Checksum = checksum
-
+func (self *File) ReadInfo(reader io.ReadSeeker, file_location string, file_offset int64) error {
 	self.DataPosition = file_offset
 	self.DataLocation = file_location
 
-	return true, err
+	var index uint32
+
+	err := pack.ReadUInt32(reader, false, &index) // File index
+	if err != nil {
+		return err
+	} else if index == 0 {
+		return ErrNoMoreFileInfo
+	}
+
+	self.Index = index
+
+	path, _, err := pack.ReadNullTerminatedString(reader) // File path
+	if err != nil {
+		return err
+	}
+
+	self.Path = path
+
+	err = pack.ReadInt64(reader, false, &self.Size) // File size
+	if err != nil {
+		return err
+	}
+
+	return pack.ReadUInt32(reader, false, &self.Checksum) // File checksum
 }
 
 func (self *File) WriteInfo(writer io.WriteSeeker) error {
-	err := pack.WriteUInt32(writer, self.Index, false) // Index
+	err := pack.WriteUInt32(writer, false, self.Index) // Index
 	if err != nil {
 		return err
 	}
@@ -514,12 +503,12 @@ func (self *File) WriteInfo(writer io.WriteSeeker) error {
 		return err
 	}
 
-	err = pack.WriteInt64(writer, self.Size, false) // Size
+	err = pack.WriteInt64(writer, false, self.Size) // Size
 	if err != nil {
 		return err
 	}
 
-	return pack.WriteUInt32(writer, self.Checksum, false) // Checksum (CRC32)
+	return pack.WriteUInt32(writer, false, self.Checksum) // Checksum (CRC32)
 }
 
 func (self *File) ReadData() ([]byte, error) {
@@ -573,30 +562,24 @@ func (self *File) WriteData(writer io.WriteSeeker) ([]byte, error) {
 	return data, nil
 }
 
-func (self *File) CalculateChecksum() (uint32, error) {
+func (self *File) CalculateChecksum(checksum *uint32) error {
 	file, err := os.Open(self.DataLocation)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	defer file.Close()
 
 	_, err = file.Seek(self.DataPosition, io.SeekStart)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	return pack.CRC32IEEE(file, self.Size)
+	return pack.CRC32IEEE(file, self.Size, checksum)
 }
 
 func (self *File) UpdateChecksum() error {
-	checksum, err := self.CalculateChecksum()
-	if err == nil {
-		self.Checksum = checksum
-		return nil
-	} else {
-		return err
-	}
+	return self.CalculateChecksum(&self.Checksum)
 }
 
 func (self *File) IsValid() (bool, error) {
@@ -605,7 +588,9 @@ func (self *File) IsValid() (bool, error) {
 		return true, nil // No checksum
 	}
 
-	checksum, err := self.CalculateChecksum()
+	var checksum uint32
+
+	err := self.CalculateChecksum(&checksum)
 	if err != nil {
 		return false, err
 	}
@@ -767,14 +752,16 @@ func (self *Addon) Read(reader io.ReadSeeker) error {
 	for {
 		file := File{}
 
-		success, err := file.ReadInfo(reader, file_location, file_offset)
-		if err != nil {
-			return err
-		} else if success {
+		err = file.ReadInfo(reader, file_location, file_offset)
+		if err == nil {
 			file_list = append(file_list, file)
 			file_offset += file.Size
 		} else {
-			break
+			if err == ErrNoMoreFileInfo {
+				break
+			} else {
+				return err
+			}
 		}
 	}
 
@@ -798,13 +785,7 @@ func (self *Addon) Read(reader io.ReadSeeker) error {
 	self.Size = file_size
 
 	// Addon checksum
-	file_checksum, err := pack.ReadUInt32(reader, false)
-	if err != nil {
-		return err
-	}
-
-	self.Checksum = file_checksum
-	return nil
+	return pack.ReadUInt32(reader, false, &self.Checksum)
 }
 
 func (self *Addon) Write(file_path string) error {
@@ -813,6 +794,7 @@ func (self *Addon) Write(file_path string) error {
 		return err
 	}
 
+	self.Location = file_path
 	defer file.Close()
 
 	// Header
@@ -835,7 +817,7 @@ func (self *Addon) Write(file_path string) error {
 		}
 	}
 
-	err = pack.WriteUInt32(file, 0, false)
+	err = pack.WriteUInt32(file, false, 0)
 	if err != nil {
 		return err
 	}
@@ -862,7 +844,9 @@ func (self *Addon) Write(file_path string) error {
 		return err
 	}
 
-	checksum, err := pack.CRC32IEEE(file, file_size)
+	var checksum uint32
+
+	err = pack.CRC32IEEE(file, file_size, &checksum)
 	if err != nil {
 		return err
 	}
@@ -875,44 +859,33 @@ func (self *Addon) Write(file_path string) error {
 		return err
 	}
 
-	err = pack.WriteUInt32(file, checksum, false)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return pack.WriteUInt32(file, false, checksum)
 }
 
-func (self *Addon) CalculateChecksum() (uint32, error) {
+func (self *Addon) CalculateChecksum(checksum *uint32) error {
 	file, err := os.Open(self.Location)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	defer file.Close()
 
 	file_size, err := file.Seek(0, io.SeekEnd)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	_, err = file.Seek(0, io.SeekStart)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	file_size -= 4 // checksum bytes (uint32/crc32)
-	return pack.CRC32IEEE(file, file_size)
+	return pack.CRC32IEEE(file, file_size, checksum)
 }
 
 func (self *Addon) UpdateChecksum() error {
-	checksum, err := self.CalculateChecksum()
-	if err == nil {
-		self.Checksum = checksum
-		return nil
-	} else {
-		return err
-	}
+	return self.CalculateChecksum(&self.Checksum)
 }
 
 func (self *Addon) IsValid() (bool, error) {
@@ -921,7 +894,9 @@ func (self *Addon) IsValid() (bool, error) {
 		return true, nil // No checksum
 	}
 
-	checksum, err := self.CalculateChecksum()
+	var checksum uint32
+
+	err := self.CalculateChecksum(&checksum)
 	if err != nil {
 		return false, err
 	}
@@ -932,7 +907,7 @@ func (self *Addon) IsValid() (bool, error) {
 func IsLegacy(reader io.ReadSeeker) (bool, error) {
 	var signature uint32
 
-	err := binary.Read(reader, binary.LittleEndian, &signature)
+	err := pack.ReadUInt32(reader, false, &signature)
 	if err != nil {
 		return false, err
 	}
